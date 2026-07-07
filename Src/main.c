@@ -18,58 +18,108 @@
 
 #include <stdint.h>
 
-/* ---- Register addresses (STM32F103 reference manual) ---- */
-#define RCC_APB2ENR   (*(volatile uint32_t *)0x40021018)
-#define RCC_APB1ENR   (*(volatile uint32_t *)0x4002101C)
+/* ---- RCC (clocks) ---- */
+#define RCC_APB2ENR   (*(volatile uint32_t *)0x40021018)  /* GPIOA, GPIOC, USART1 */
+#define RCC_APB1ENR   (*(volatile uint32_t *)0x4002101C)  /* TIM2 */
 
-#define GPIOC_CRH     (*(volatile uint32_t *)0x40011004)
+/* ---- GPIO ---- */
+#define GPIOA_CRH     (*(volatile uint32_t *)0x40010804)  /* PA9/PA10 config */
+#define GPIOC_CRH     (*(volatile uint32_t *)0x40011004)  /* PC13 config */
 #define GPIOC_ODR     (*(volatile uint32_t *)0x4001100C)
 
+/* ---- TIM2 ---- */
 #define TIM2_CR1      (*(volatile uint32_t *)0x40000000)
-#define TIM2_DIER     (*(volatile uint32_t *)0x4000000C)  /* interrupt enable */
+#define TIM2_DIER     (*(volatile uint32_t *)0x4000000C)
 #define TIM2_SR       (*(volatile uint32_t *)0x40000010)
 #define TIM2_EGR      (*(volatile uint32_t *)0x40000014)
 #define TIM2_PSC      (*(volatile uint32_t *)0x40000028)
 #define TIM2_ARR      (*(volatile uint32_t *)0x4000002C)
 
-/* Cortex-M3 NVIC: lets the CPU accept individual interrupts */
-#define NVIC_ISER0    (*(volatile uint32_t *)0xE000E100)
-#define TIM2_IRQ_NUM  28   /* TIM2 is interrupt line 28 on the F103 */
+/* ---- USART1 ---- */
+#define USART1_SR     (*(volatile uint32_t *)0x40013800)
+#define USART1_DR     (*(volatile uint32_t *)0x40013804)
+#define USART1_BRR    (*(volatile uint32_t *)0x40013808)
+#define USART1_CR1    (*(volatile uint32_t *)0x4001380C)
 
-/* Runs automatically every time TIM2 overflows (every 500 ms).
-   The name MUST match the vector table entry exactly. */
+/* ---- NVIC (CPU interrupt controller) ---- */
+#define NVIC_ISER0    (*(volatile uint32_t *)0xE000E100)
+#define TIM2_IRQ_NUM  28
+
+volatile uint32_t ticks = 0;
+volatile uint8_t  tick_flag = 0;
+
 void TIM2_IRQHandler(void)
 {
-    if (TIM2_SR & (1 << 0))       /* was it the update event? */
+    if (TIM2_SR & (1 << 0))
     {
-        TIM2_SR   &= ~(1 << 0);   /* clear the flag, or it re-fires forever */
-        GPIOC_ODR ^= (1 << 13);   /* toggle the LED */
+        TIM2_SR   &= ~(1 << 0);
+        GPIOC_ODR ^= (1 << 13);   /* toggle LED */
+        ticks++;
+        tick_flag = 1;            /* let main() know it's time to print */
     }
+}
+
+/* ---- tiny UART print helpers (you'll reuse these constantly) ---- */
+void uart_send_char(char c)
+{
+    while (!(USART1_SR & (1 << 7)));   /* wait until TXE: transmit reg empty */
+    USART1_DR = c;
+}
+void uart_send_string(const char *s)
+{
+    while (*s) uart_send_char(*s++);
+}
+void uart_send_uint(uint32_t n)        /* print an unsigned number as text */
+{
+    char buf[11];
+    int i = 0;
+    if (n == 0) { uart_send_char('0'); return; }
+    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
+    while (i > 0) uart_send_char(buf[--i]);
 }
 
 int main(void)
 {
-    /* ---- GPIO: PC13 as output ---- */
-    RCC_APB2ENR |= (1 << 4);
-    GPIOC_CRH   &= ~(0xF << 20);
-    GPIOC_CRH   |=  (0x2 << 20);
+    /* ---- GPIO clocks: Port A (for UART) and Port C (for LED) ---- */
+    RCC_APB2ENR |= (1 << 2);   /* GPIOA */
+    RCC_APB2ENR |= (1 << 4);   /* GPIOC */
 
-    /* ---- TIM2: overflow every 500 ms ---- */
+    /* PC13 -> output (LED) */
+    GPIOC_CRH &= ~(0xF << 20);
+    GPIOC_CRH |=  (0x2 << 20);
+
+    /* PA9  -> USART1 TX: alternate-function push-pull, 50 MHz = 0xB */
+    GPIOA_CRH &= ~(0xF << 4);
+    GPIOA_CRH |=  (0xB << 4);
+    /* PA10 -> USART1 RX: floating input = 0x4 */
+    GPIOA_CRH &= ~(0xF << 8);
+    GPIOA_CRH |=  (0x4 << 8);
+
+    /* ---- USART1: 9600 baud, 8-N-1 ---- */
+    RCC_APB2ENR |= (1 << 14);                       /* USART1 clock */
+    USART1_BRR = 833;                               /* 8 MHz / 9600 baud */
+    USART1_CR1 = (1 << 13) | (1 << 3) | (1 << 2);   /* UE | TE | RE */
+
+    /* ---- TIM2: interrupt every 500 ms ---- */
     RCC_APB1ENR |= (1 << 0);
-    TIM2_PSC = 7999;              /* 8 MHz / 8000 = 1 kHz tick */
-    TIM2_ARR = 499;               /* 500 ticks     = 500 ms    */
-    TIM2_EGR |= (1 << 0);         /* load PSC/ARR now */
-    TIM2_SR  &= ~(1 << 0);        /* clear the flag UG set */
+    TIM2_PSC = 7999;
+    TIM2_ARR = 499;
+    TIM2_EGR  |= (1 << 0);
+    TIM2_SR   &= ~(1 << 0);
+    TIM2_DIER  |= (1 << 0);
+    NVIC_ISER0 |= (1 << TIM2_IRQ_NUM);
+    TIM2_CR1  |= (1 << 0);
 
-    /* ---- turn on interrupts ---- */
-    TIM2_DIER  |= (1 << 0);              /* timer: raise interrupt on overflow */
-    NVIC_ISER0 |= (1 << TIM2_IRQ_NUM);   /* CPU: allow the TIM2 interrupt */
-
-    TIM2_CR1 |= (1 << 0);         /* start the counter */
+    uart_send_string("STM32 UART online\r\n");
 
     while (1)
     {
-        /* Nothing here — and that's the point.
-           The CPU is free; TIM2_IRQHandler blinks the LED in the background. */
+        if (tick_flag)
+        {
+            tick_flag = 0;
+            uart_send_string("tick: ");
+            uart_send_uint(ticks);
+            uart_send_string("\r\n");
+        }
     }
 }
