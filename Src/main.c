@@ -76,9 +76,9 @@
 #define CAN_F0R2   (*(volatile uint32_t *)0x40006644)
 
 /* ---- pick ONE role for this build ---- */
-#define ROLE_LOOPBACK      /* single board: run A + B together, CAN in loopback */
-/* #define ROLE_NODE_A */  /* two boards: sender only          */
-/* #define ROLE_NODE_B */  /* two boards: receiver + LED only  */
+/* #define ROLE_LOOPBACK */    /* single board: A + B together, CAN loopback */
+/* #define ROLE_NODE_A */            /* two boards: sender only          */
+#define ROLE_NODE_B      /* two boards: receiver + LED only  */
 
 #if defined(ROLE_LOOPBACK)
   #define CAN_LOOPBACK 1
